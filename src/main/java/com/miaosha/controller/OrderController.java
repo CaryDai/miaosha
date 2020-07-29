@@ -63,7 +63,7 @@ public class OrderController extends BaseController {
     @PostConstruct
     public void init() {
         // 队列泄洪
-        executorService = Executors.newFixedThreadPool(20);
+        executorService = Executors.newFixedThreadPool(1000);
 
         // RateLimiter会按照一定的频率往桶里扔令牌，线程拿到令牌才能执行，比如你希望自己的应用程序QPS不要超过1000，
         // 那么RateLimiter设置1000的速率后，就会每秒往桶里扔1000个令牌。
@@ -99,31 +99,48 @@ public class OrderController extends BaseController {
     public CommonReturnType generatetoken(@RequestParam(name = "itemId") Integer itemId,
                                           @RequestParam(name = "promoId") Integer promoId,
                                           @RequestParam(name = "verifyCode") String verifyCode) throws BusinessException {
-        // 根据token获取用户信息
-        String token = httpServletRequest.getParameterMap().get("token")[0];
-        if (StringUtils.isEmpty(token)) {
-            throw new BusinessException(EnumBusinessError.USER_NOT_LOGIN, "用户还未登陆，不能下单");
-        }
-        UserModel userModel = (UserModel) redisTemplate.opsForValue().get(token);
-        // 获取用户的登陆信息
-        if (userModel == null) {
-            throw new BusinessException(EnumBusinessError.USER_NOT_LOGIN, "用户还未登陆，不能下单");
+        String promoToken = null;
+        // 同步调用线程池的submit方法
+        // 拥塞窗口为1000的等待队列，用来队列化泄洪
+        Future<String> future = executorService.submit(new Callable<String>() {
+
+            @Override
+            public String call() throws Exception {
+                // 根据token获取用户信息
+                String token = httpServletRequest.getParameterMap().get("token")[0];
+                if (StringUtils.isEmpty(token)) {
+                    throw new BusinessException(EnumBusinessError.USER_NOT_LOGIN, "用户还未登陆，不能下单");
+                }
+                UserModel userModel = (UserModel) redisTemplate.opsForValue().get(token);
+                // 获取用户的登陆信息
+                if (userModel == null) {
+                    throw new BusinessException(EnumBusinessError.USER_NOT_LOGIN, "用户还未登陆，不能下单");
+                }
+
+                // 通过verifyCode验证验证码的有效性
+                String redisVerifyCode = (String) redisTemplate.opsForValue().get("verify_code_"+userModel.getId());
+                if (StringUtils.isEmpty(redisVerifyCode)) {
+                    throw new BusinessException(EnumBusinessError.PARAMETER_VALIDATION_ERROR,"请求非法");
+                }
+                if (!redisVerifyCode.equalsIgnoreCase(verifyCode)) {
+                    throw new BusinessException(EnumBusinessError.PARAMETER_VALIDATION_ERROR,"请求非法，验证码错误");
+                }
+
+                // 获取秒杀访问令牌
+                String promoToken = promoService.generateSecondKillToken(promoId, itemId, userModel.getId());
+                if (promoToken == null) {
+                    throw new BusinessException(EnumBusinessError.PARAMETER_VALIDATION_ERROR,"生成令牌失败");
+                }
+                return promoToken;
+            }
+        });
+
+        try {
+            promoToken = future.get();
+        } catch (InterruptedException | ExecutionException e) {
+            e.printStackTrace();
         }
 
-        // 通过verifyCode验证验证码的有效性
-        String redisVerifyCode = (String) redisTemplate.opsForValue().get("verify_code_"+userModel.getId());
-        if (StringUtils.isEmpty(redisVerifyCode)) {
-            throw new BusinessException(EnumBusinessError.PARAMETER_VALIDATION_ERROR,"请求非法");
-        }
-        if (!redisVerifyCode.equalsIgnoreCase(verifyCode)) {
-            throw new BusinessException(EnumBusinessError.PARAMETER_VALIDATION_ERROR,"请求非法，验证码错误");
-        }
-
-        // 获取秒杀访问令牌
-        String promoToken = promoService.generateSecondKillToken(promoId, itemId, userModel.getId());
-        if (promoToken == null) {
-            throw new BusinessException(EnumBusinessError.PARAMETER_VALIDATION_ERROR,"生成令牌失败");
-        }
         return CommonReturnType.create(promoToken);
     }
 
@@ -135,7 +152,7 @@ public class OrderController extends BaseController {
                                         @RequestParam(name = "promoId", required = false) Integer promoId,
                                         @RequestParam(name = "promoToken", required = false) String promoToken) throws BusinessException {
 
-        // 试着去拿令牌
+        // 试着去令牌桶中拿令牌
         if (!orderCreateRateLimiter.tryAcquire()) {
             throw new BusinessException(EnumBusinessError.RATELIMIT);
         }
@@ -163,29 +180,12 @@ public class OrderController extends BaseController {
         //UserModel userModel = (UserModel) httpServletRequest.getSession().getAttribute("LOGIN_USER");
 //        OrderModel orderModel = orderService.createOrder(userModel.getId(), itemId, promoId, amount);
 
-        // 同步调用线程池的submit方法
-        // 拥塞窗口为20的等待队列，用来队列化泄洪
-        Future<Object> future = executorService.submit(new Callable<Object>() {
-            // 创建异步线程
-            @Override
-            public Object call() throws Exception {
-                // 加入库存流水init状态
-                String stockLogId = itemService.initStockLog(itemId,amount);
+        // 加入库存流水init状态
+        String stockLogId = itemService.initStockLog(itemId,amount);
 
-                // 再去异步发送事务型消息
-                if (!mqProducer.transactionAsyncReduceStock(userModel.getId(),promoId,itemId,amount,stockLogId)) {
-                    throw new BusinessException(EnumBusinessError.UNKNOWN_ERROR,"下单失败");
-                }
-                return null;
-            }
-        });
-
-        try {
-            future.get();
-        } catch (InterruptedException e) {
-            throw new BusinessException(EnumBusinessError.UNKNOWN_ERROR);
-        } catch (ExecutionException e) {
-            e.printStackTrace();
+        // 再去异步发送事务型消息
+        if (!mqProducer.transactionAsyncReduceStock(userModel.getId(),promoId,itemId,amount,stockLogId)) {
+            throw new BusinessException(EnumBusinessError.UNKNOWN_ERROR,"下单失败");
         }
 
         return CommonReturnType.create(null);

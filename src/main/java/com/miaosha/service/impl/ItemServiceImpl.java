@@ -164,33 +164,25 @@ public class ItemServiceImpl implements ItemService {
 
         // 改为从redis中减库存
         // 对该商品减库存时需要先获得它对应的分布式锁
-        final String key = itemId + "-redisLock";
-        RLock lock = redissonClient.getLock(key);
-        try {
-            // 最大的等待获取锁的时间为30s. 上锁之后，10s内操作完毕将自动释放锁
-            boolean getLock = lock.tryLock(30,10, TimeUnit.SECONDS);
-            if (!getLock) {
-                throw new BusinessException(EnumBusinessError.PARAMETER_VALIDATION_ERROR,"请稍等...");
-            }
-            long result = redisTemplate.opsForValue().increment("promo_item_stock_"+itemId, amount.intValue()*-1);
-            if (result > 0) {
-                return true;
-            } else if (result == 0) {
-                // 打上库存已售罄标识
-                redisTemplate.opsForValue().set("promo_item_stock_invalid_"+itemId,true);
-                return true;
-            } else {
-                // 更新库存失败
-                increaseStock(itemId,amount);
-                return false;
-            }
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        } finally {
-            lock.unlock();
+//        final String key = itemId + "-redisLock";
+//        RLock lock = redissonClient.getLock(key);
+        // 最大的等待获取锁的时间为30s. 上锁之后，10s内操作完毕将自动释放锁
+//            boolean getLock = lock.tryLock(30,10, TimeUnit.SECONDS);
+//            if (!getLock) {
+//                throw new BusinessException(EnumBusinessError.PARAMETER_VALIDATION_ERROR,"请稍等...");
+//            }
+        long result = redisTemplate.opsForValue().increment("promo_item_stock_"+itemId, amount.intValue()*-1);
+        if (result > 0) {
+            return true;
+        } else if (result == 0) {
+            // 打上库存已售罄标识
+            redisTemplate.opsForValue().set("promo_item_stock_invalid_"+itemId,true);
+            return true;
+        } else {
+            // 更新库存失败
+            increaseStock(itemId,amount);
+            return false;
         }
-        // try语句块执行完后，会进入finally解锁然后返回，所以这一句不会被执行，只是为了有返回值才写
-        return true;
     }
 
     @Override

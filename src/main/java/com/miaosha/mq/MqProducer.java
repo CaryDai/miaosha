@@ -76,6 +76,7 @@ public class MqProducer {
                     stockLogDOMapper.updateByPrimaryKeySelective(stockLogDO);
                     return LocalTransactionState.ROLLBACK_MESSAGE;
                 }
+                // 下单成功，producer向broker发送Commit，这样Consumer就可以消费这条半消息，执行最终的数据库口库存操作
                 return LocalTransactionState.COMMIT_MESSAGE;
             }
 
@@ -114,6 +115,7 @@ public class MqProducer {
         argsMap.put("promoId",promoId);
         argsMap.put("stockLogId",stockLogId);
 
+        // 创建消息，topic为stock，消息内容为bodyMap
         Message message = new Message(topicName, "increase",
                 JSON.toJSON(bodyMap).toString().getBytes(Charset.forName("UTF-8")));
 

@@ -82,7 +82,7 @@ public class OrderServiceImpl implements OrderService {
 //            }
 //        }
 
-        // 2.落单减库存
+        // 2.落单减库存（这里是减redis库存）
         boolean result = itemService.decreaseStock(itemId, amount);
         if (!result) {
             throw new BusinessException(EnumBusinessError.STOCK_NOT_ENOUGH);
@@ -109,7 +109,7 @@ public class OrderServiceImpl implements OrderService {
         // 加上商品的销量
         itemService.increaseSales(itemId,amount);
 
-        // 设置库存流水状态为成功
+        // 这边下单成功，订单号已经生成，设置库存流水状态为成功
         StockLogDO stockLogDO = stockLogDOMapper.selectByPrimaryKey(stockLogId);
         if (stockLogDO == null) {
             throw new BusinessException(EnumBusinessError.UNKNOWN_ERROR);
@@ -134,6 +134,7 @@ public class OrderServiceImpl implements OrderService {
         return orderModel;
     }
 
+    // REQUIRES_NEW 表示无论当前事务是否在其它事务中，都会开启一个新的事务，执行完成把新的事务提交
     // 这个事务propagation保证了即使createOrder创建订单时发生了错误，当前的sequence也会被使用掉
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     String generateOrderNo() {
